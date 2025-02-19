@@ -1,5 +1,4 @@
-// Copyright (c) 2009, Google Inc.
-// All rights reserved.
+// Copyright 2009 Google LLC
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
@@ -11,7 +10,7 @@
 // copyright notice, this list of conditions and the following disclaimer
 // in the documentation and/or other materials provided with the
 // distribution.
-//     * Neither the name of Google Inc. nor the names of its
+//     * Neither the name of Google LLC nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
 //
@@ -30,6 +29,10 @@
 // Converts a minidump file to a core file which gdb can read.
 // Large parts lifted from the userspace core dumper:
 //   http://code.google.com/p/google-coredumper/
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>  // Must come first
+#endif
 
 #include <elf.h>
 #include <errno.h>
@@ -77,6 +80,8 @@
   #define ELF_ARCH  EM_MIPS
 #elif defined(__aarch64__)
   #define ELF_ARCH  EM_AARCH64
+#elif defined(__riscv)
+  #define ELF_ARCH  EM_RISCV
 #endif
 
 #if defined(__arm__)
@@ -84,7 +89,7 @@
 // containing core registers, while they use 'user_regs_struct' on other
 // architectures. This file-local typedef simplifies the source code.
 typedef user_regs user_regs_struct;
-#elif defined (__mips__)
+#elif defined (__mips__) || defined(__riscv)
 // This file-local typedef simplifies the source code.
 typedef gregset_t user_regs_struct;
 #endif
@@ -259,7 +264,7 @@ typedef struct prpsinfo {       /* Information about process                 */
   unsigned char  pr_zomb;       /* Zombie                                    */
   signed char    pr_nice;       /* Nice val                                  */
   unsigned long  pr_flag;       /* Flags                                     */
-#if defined(__x86_64__) || defined(__mips__)
+#if defined(__x86_64__) || defined(__mips__) || defined(__riscv)
   uint32_t       pr_uid;        /* User ID                                   */
   uint32_t       pr_gid;        /* Group ID                                  */
 #else
@@ -277,7 +282,7 @@ typedef struct prpsinfo {       /* Information about process                 */
 // We parse the minidump file and keep the parsed information in this structure
 struct CrashedProcess {
   CrashedProcess()
-      : crashing_tid(-1),
+      : exception{-1},
         auxv(NULL),
         auxv_length(0) {
     memset(&prps, 0, sizeof(prps));
@@ -301,12 +306,11 @@ struct CrashedProcess {
   };
   std::map<uint64_t, Mapping> mappings;
 
-  pid_t crashing_tid;
   int fatal_signal;
 
   struct Thread {
     pid_t tid;
-#if defined(__mips__)
+#if defined(__mips__) || defined(__riscv)
     mcontext_t mcontext;
 #else
     user_regs_struct regs;
@@ -325,6 +329,7 @@ struct CrashedProcess {
     size_t stack_length;
   };
   std::vector<Thread> threads;
+  Thread exception;
 
   const uint8_t* auxv;
   size_t auxv_length;
@@ -342,6 +347,34 @@ struct CrashedProcess {
   string dynamic_data;
   MDRawDebug debug;
   std::vector<MDRawLinkMap> link_map;
+};
+
+/* NT_FILE note as defined by linux kernel in fs/binfmt_elf.c
+ * is structured as:
+ * long count     -- how many files are mapped
+ * long page_size -- units for file_ofs
+ * array of [COUNT] elements of
+ *   long start
+ *   long end
+ *   long file_ofs
+ * followed by COUNT filenames in ASCII: "FILE1" NUL "FILE2" NUL...
+ * we can re-use the file mappings info
+ */
+struct NtFileNote {
+  NtFileNote()
+  // XXX: we really should source page size from the minidump itself but
+  // I cannot find anywhere in the minidump generation code where this
+  // would be stashed.
+  : page_sz((unsigned long)getpagesize()),
+    filename_count(0),
+    filenames_length(0) {
+  }
+
+  unsigned long page_sz;
+  unsigned long filename_count;
+  std::vector<unsigned long> file_mappings;
+  std::vector<std::string> filenames;
+  size_t filenames_length;
 };
 
 #if defined(__i386__)
@@ -533,6 +566,67 @@ ParseThreadRegisters(CrashedProcess::Thread* thread,
   thread->mcontext.fpc_eir = rawregs->float_save.fir;
 #endif
 }
+#elif defined(__riscv)
+static void
+ParseThreadRegisters(CrashedProcess::Thread* thread,
+                    const MinidumpMemoryRange& range) {
+# if __riscv_xlen == 32
+  const MDRawContextRISCV* rawregs = range.GetData<MDRawContextRISCV>(0);
+# elif __riscv_xlen == 64
+  const MDRawContextRISCV64* rawregs = range.GetData<MDRawContextRISCV64>(0);
+# else
+#  error "Unexpected __riscv_xlen"
+# endif
+
+  thread->mcontext.__gregs[0]  = rawregs->pc;
+  thread->mcontext.__gregs[1]  = rawregs->ra;
+  thread->mcontext.__gregs[2]  = rawregs->sp;
+  thread->mcontext.__gregs[3]  = rawregs->gp;
+  thread->mcontext.__gregs[4]  = rawregs->tp;
+  thread->mcontext.__gregs[5]  = rawregs->t0;
+  thread->mcontext.__gregs[6]  = rawregs->t1;
+  thread->mcontext.__gregs[7]  = rawregs->t2;
+  thread->mcontext.__gregs[8]  = rawregs->s0;
+  thread->mcontext.__gregs[9]  = rawregs->s1;
+  thread->mcontext.__gregs[10] = rawregs->a0;
+  thread->mcontext.__gregs[11] = rawregs->a1;
+  thread->mcontext.__gregs[12] = rawregs->a2;
+  thread->mcontext.__gregs[13] = rawregs->a3;
+  thread->mcontext.__gregs[14] = rawregs->a4;
+  thread->mcontext.__gregs[15] = rawregs->a5;
+  thread->mcontext.__gregs[16] = rawregs->a6;
+  thread->mcontext.__gregs[17] = rawregs->a7;
+  thread->mcontext.__gregs[18] = rawregs->s2;
+  thread->mcontext.__gregs[19] = rawregs->s3;
+  thread->mcontext.__gregs[20] = rawregs->s4;
+  thread->mcontext.__gregs[21] = rawregs->s5;
+  thread->mcontext.__gregs[22] = rawregs->s6;
+  thread->mcontext.__gregs[23] = rawregs->s7;
+  thread->mcontext.__gregs[24] = rawregs->s8;
+  thread->mcontext.__gregs[25] = rawregs->s9;
+  thread->mcontext.__gregs[26] = rawregs->s10;
+  thread->mcontext.__gregs[27] = rawregs->s11;
+  thread->mcontext.__gregs[28] = rawregs->t3;
+  thread->mcontext.__gregs[29] = rawregs->t4;
+  thread->mcontext.__gregs[30] = rawregs->t5;
+  thread->mcontext.__gregs[31] = rawregs->t6;
+
+  // Breakpad only supports RISCV32 with 32 bit floating point.
+  // Breakpad only supports RISCV64 with 64 bit floating point.
+#if __riscv_xlen == 32
+  for (int i = 0; i < MD_CONTEXT_RISCV_FPR_COUNT; ++i) {
+    thread->mcontext.__fpregs.__f.__f[i] = rawregs->fpregs[i];
+  }
+  thread->mcontext.__fpregs.__f.__fcsr = rawregs->fcsr;
+#elif __riscv_xlen == 64
+  for (int i = 0; i < MD_CONTEXT_RISCV_FPR_COUNT; ++i) {
+    thread->mcontext.__fpregs.__d.__f[i] = rawregs->fpregs[i];
+  }
+  thread->mcontext.__fpregs.__d.__fcsr = rawregs->fcsr;
+#else
+#error "Unexpected __riscv_xlen"
+#endif
+}
 #else
 #error "This code has not been ported to your platform yet"
 #endif
@@ -622,6 +716,22 @@ ParseSystemInfo(const Options& options, CrashedProcess* crashinfo,
 # else
 #  error "This mips ABI is currently not supported (n32)"
 # endif
+#elif defined(__riscv)
+# if __riscv_xlen == 32
+  if (sysinfo->processor_architecture != MD_CPU_ARCHITECTURE_RISCV) {
+    fprintf(stderr,
+            "This version of minidump-2-core only supports RISCV.\n");
+    exit(1);
+  }
+# elif __riscv_xlen == 64
+  if (sysinfo->processor_architecture != MD_CPU_ARCHITECTURE_RISCV64) {
+    fprintf(stderr,
+            "This version of minidump-2-core only supports RISCV64.\n");
+    exit(1);
+  }
+# else
+#  error "Unexpected __riscv_xlen"
+# endif
 #else
 #error "This code has not been ported to your platform yet"
 #endif
@@ -649,6 +759,10 @@ ParseSystemInfo(const Options& options, CrashedProcess* crashinfo,
             ? "MIPS"
             : sysinfo->processor_architecture == MD_CPU_ARCHITECTURE_MIPS64
             ? "MIPS64"
+            : sysinfo->processor_architecture == MD_CPU_ARCHITECTURE_RISCV
+            ? "RISCV"
+            : sysinfo->processor_architecture == MD_CPU_ARCHITECTURE_RISCV64
+            ? "RISCV64"
             : "???",
             sysinfo->number_of_processors,
             sysinfo->processor_level,
@@ -909,10 +1023,25 @@ ParseDSODebugInfo(const Options& options, CrashedProcess* crashinfo,
 
 static void
 ParseExceptionStream(const Options& options, CrashedProcess* crashinfo,
-                     const MinidumpMemoryRange& range) {
+                     const MinidumpMemoryRange& range,
+                     const MinidumpMemoryRange& full_file) {
   const MDRawExceptionStream* exp = range.GetData<MDRawExceptionStream>(0);
-  crashinfo->crashing_tid = exp->thread_id;
+  if (!exp) {
+    return;
+  }
+  if (options.verbose) {
+    fprintf(stderr,
+            "MD_EXCEPTION_STREAM:\n"
+            "Found exception thread %" PRIu32 " \n"
+            "\n\n",
+            exp->thread_id);
+  }
   crashinfo->fatal_signal = (int) exp->exception_record.exception_code;
+  crashinfo->exception = {};
+  crashinfo->exception.tid = exp->thread_id;
+  // crashinfo->threads[].tid == crashinfo->exception.tid provides the stack.
+  ParseThreadRegisters(&crashinfo->exception,
+                       full_file.Subrange(exp->thread_context));
 }
 
 static bool
@@ -926,6 +1055,8 @@ WriteThread(const Options& options, const CrashedProcess::Thread& thread,
   pr.pr_pid = thread.tid;
 #if defined(__mips__)
   memcpy(&pr.pr_reg, &thread.mcontext.gregs, sizeof(user_regs_struct));
+#elif defined(__riscv)
+  memcpy(&pr.pr_reg, &thread.mcontext.__gregs, sizeof(user_regs_struct));
 #else
   memcpy(&pr.pr_reg, &thread.regs, sizeof(user_regs_struct));
 #endif
@@ -1195,6 +1326,8 @@ AugmentMappings(const Options& options, CrashedProcess* crashinfo,
     }
     AddDataToMapping(crashinfo, crashinfo->dynamic_data,
                      (uintptr_t)crashinfo->debug.dynamic);
+  } else {
+    fprintf(stderr, "dynamic data empty\n");
   }
 }
 
@@ -1273,7 +1406,7 @@ main(int argc, const char* argv[]) {
         break;
       case MD_EXCEPTION_STREAM:
         ParseExceptionStream(options, &crashinfo,
-                             dump.Subrange(dirent->location));
+                             dump.Subrange(dirent->location), dump);
         break;
       case MD_MODULE_LIST_STREAM:
         ParseModuleStream(options, &crashinfo, dump.Subrange(dirent->location),
@@ -1314,19 +1447,40 @@ main(int argc, const char* argv[]) {
   if (!writea(options.out_fd, &ehdr, sizeof(Ehdr)))
     return 1;
 
+  struct NtFileNote nt_file;
+  for (auto iter = crashinfo.mappings.begin();
+       iter != crashinfo.mappings.end(); iter++) {
+    if (iter->second.filename.empty())
+      continue;
+    nt_file.file_mappings.push_back(iter->second.start_address);
+    nt_file.file_mappings.push_back(iter->second.end_address);
+    nt_file.file_mappings.push_back(iter->second.offset);
+    nt_file.filenames.push_back(iter->second.filename);
+    nt_file.filenames_length += iter->second.filename.length() + 1;
+    nt_file.filename_count += 1;
+  }
+  // implementation of NT_FILE note seems to pad alignment by 4 bytes but
+  // keep the header size the true size of the note. so we keep nt_file_align
+  // as separate field.
+  size_t nt_file_data_sz = (2 * sizeof(unsigned long)) +
+      (nt_file.file_mappings.size() * sizeof(unsigned long)) +
+      nt_file.filenames_length;
+  size_t nt_file_align = nt_file_data_sz % 4 == 0 ? 0 : 4 -
+      (nt_file_data_sz % 4);
   size_t offset = sizeof(Ehdr) + ehdr.e_phnum * sizeof(Phdr);
   size_t filesz = sizeof(Nhdr) + 8 + sizeof(prpsinfo) +
-                  // sizeof(Nhdr) + 8 + sizeof(user) +
-                  sizeof(Nhdr) + 8 + crashinfo.auxv_length +
-                  crashinfo.threads.size() * (
-                    (sizeof(Nhdr) + 8 + sizeof(prstatus))
+      // sizeof(Nhdr) + 8 + sizeof(user) +
+      sizeof(Nhdr) + 8 + crashinfo.auxv_length +
+      sizeof(Nhdr) + 8 + nt_file_data_sz + nt_file_align +
+      crashinfo.threads.size() * (
+      (sizeof(Nhdr) + 8 + sizeof(prstatus))
 #if defined(__i386__) || defined(__x86_64__)
-                   + sizeof(Nhdr) + 8 + sizeof(user_fpregs_struct)
+      + sizeof(Nhdr) + 8 + sizeof(user_fpregs_struct)
 #endif
 #if defined(__i386__)
-                   + sizeof(Nhdr) + 8 + sizeof(user_fpxregs_struct)
+      + sizeof(Nhdr) + 8 + sizeof(user_fpxregs_struct)
 #endif
-                    );
+      );
 
   Phdr phdr;
   memset(&phdr, 0, sizeof(Phdr));
@@ -1389,16 +1543,43 @@ main(int argc, const char* argv[]) {
     return 1;
   }
 
-  for (unsigned i = 0; i < crashinfo.threads.size(); ++i) {
-    if (crashinfo.threads[i].tid == crashinfo.crashing_tid) {
-      WriteThread(options, crashinfo.threads[i], crashinfo.fatal_signal);
+  nhdr.n_descsz = nt_file_data_sz;
+  nhdr.n_type = NT_FILE;
+  if (!writea(options.out_fd, &nhdr, sizeof(nhdr)) ||
+      !writea(options.out_fd, "CORE\0\0\0\0", 8) ||
+      !writea(options.out_fd,
+      &nt_file.filename_count, sizeof(nt_file.filename_count)) ||
+      !writea(options.out_fd, &nt_file.page_sz, sizeof(nt_file.page_sz))) {
+    return 1;
+  }
+  for (auto iter = nt_file.file_mappings.begin();
+       iter != nt_file.file_mappings.end(); iter++) {
+    if (!writea(options.out_fd, &*iter, sizeof(*iter)))
+      return 1;
+  }
+  for (auto iter = nt_file.filenames.begin();
+       iter != nt_file.filenames.end(); iter++) {
+    if (!writea(options.out_fd, iter->c_str(), iter->length() + 1))
+      return 1;
+  }
+  if (!writea(options.out_fd, "\0\0\0\0", nt_file_align))
+    return 1;
+
+  for (const auto& current_thread : crashinfo.threads) {
+    if (current_thread.tid == crashinfo.exception.tid) {
+      // Use the exception record's context for the crashed thread instead of
+      // the thread's own context. For the crashed thread the thread's own
+      // context is the state inside the exception handler. Using it would not
+      // result in the expected stack trace from the time of the crash.
+      // The stack memory has already been provided by current_thread.
+      WriteThread(options, crashinfo.exception, crashinfo.fatal_signal);
       break;
     }
   }
 
-  for (unsigned i = 0; i < crashinfo.threads.size(); ++i) {
-    if (crashinfo.threads[i].tid != crashinfo.crashing_tid)
-      WriteThread(options, crashinfo.threads[i], 0);
+  for (const auto& current_thread : crashinfo.threads) {
+    if (current_thread.tid != crashinfo.exception.tid)
+      WriteThread(options, current_thread, 0);
   }
 
   if (note_align) {

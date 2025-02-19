@@ -1,5 +1,4 @@
-// Copyright (c) 2010 Google Inc.
-// All rights reserved.
+// Copyright 2010 Google LLC
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
@@ -11,7 +10,7 @@
 // copyright notice, this list of conditions and the following disclaimer
 // in the documentation and/or other materials provided with the
 // distribution.
-//     * Neither the name of Google Inc. nor the names of its
+//     * Neither the name of Google LLC nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
 //
@@ -26,6 +25,10 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+#ifdef HAVE_CONFIG_H
+#include <config.h>  // Must come first
+#endif
 
 #include <assert.h>
 #include <stdio.h>
@@ -52,13 +55,12 @@ using google_breakpad::CodeModule;
 using google_breakpad::MemoryRegion;
 using google_breakpad::StackFrame;
 using google_breakpad::WindowsFrameInfo;
-using google_breakpad::linked_ptr;
 using google_breakpad::scoped_ptr;
 using google_breakpad::SymbolParseHelper;
 
 class TestCodeModule : public CodeModule {
  public:
-  TestCodeModule(string code_file) : code_file_(code_file) {}
+  TestCodeModule(const string& code_file) : code_file_(code_file) {}
   virtual ~TestCodeModule() {}
 
   virtual uint64_t base_address() const { return 0; }
@@ -93,12 +95,12 @@ class MockMemoryRegion: public MemoryRegion {
   }
   bool GetMemoryAtAddress(uint64_t address, uint32_t* value) const {
     switch (address) {
-      case 0x10008: *value = 0x98ecadc3; break; // saved %ebx
-      case 0x1000c: *value = 0x878f7524; break; // saved %esi
-      case 0x10010: *value = 0x6312f9a5; break; // saved %edi
-      case 0x10014: *value = 0x10038;    break; // caller's %ebp
-      case 0x10018: *value = 0xf6438648; break; // return address
-      default: *value = 0xdeadbeef;      break; // junk
+      case 0x10008: *value = 0x98ecadc3; break;  // saved %ebx
+      case 0x1000c: *value = 0x878f7524; break;  // saved %esi
+      case 0x10010: *value = 0x6312f9a5; break;  // saved %edi
+      case 0x10014: *value = 0x10038;    break;  // caller's %ebp
+      case 0x10018: *value = 0xf6438648; break;  // return address
+      default: *value = 0xdeadbeef;      break;  // junk
     }
     return true;
   }
@@ -164,7 +166,7 @@ static void ClearSourceLineInfo(StackFrame* frame) {
 }
 
 class TestBasicSourceLineResolver : public ::testing::Test {
-public:
+ public:
   void SetUp() {
     testdata_dir = string(getenv("srcdir") ? getenv("srcdir") : ".") +
                          "/src/processor/testdata";
@@ -196,6 +198,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolve)
   ASSERT_TRUE(frame.source_file_name.empty());
   ASSERT_EQ(frame.source_line, 0);
   ASSERT_EQ(frame.source_line_base, 0U);
+  EXPECT_EQ(frame.is_multiple, false);
 
   frame.module = &module1;
   resolver.FillSourceLineInfo(&frame, nullptr);
@@ -206,6 +209,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolve)
   ASSERT_EQ(frame.source_file_name, "file1_1.cc");
   ASSERT_EQ(frame.source_line, 44);
   ASSERT_EQ(frame.source_line_base, 0x1000U);
+  EXPECT_EQ(frame.is_multiple, true);
   windows_frame_info.reset(resolver.FindWindowsFrameInfo(&frame));
   ASSERT_TRUE(windows_frame_info.get());
   ASSERT_EQ(windows_frame_info->type_, WindowsFrameInfo::STACK_INFO_FRAME_DATA);
@@ -344,6 +348,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolve)
   frame.module = &module1;
   resolver.FillSourceLineInfo(&frame, nullptr);
   ASSERT_EQ(frame.function_name, string("PublicSymbol"));
+  EXPECT_EQ(frame.is_multiple, true);
 
   frame.instruction = 0x4000;
   frame.module = &module1;
@@ -360,6 +365,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolve)
   ASSERT_EQ(frame.source_file_name, "file2_2.cc");
   ASSERT_EQ(frame.source_line, 21);
   ASSERT_EQ(frame.source_line_base, 0x2180U);
+  EXPECT_EQ(frame.is_multiple, false);
   windows_frame_info.reset(resolver.FindWindowsFrameInfo(&frame));
   ASSERT_TRUE(windows_frame_info.get());
   ASSERT_EQ(windows_frame_info->type_, WindowsFrameInfo::STACK_INFO_FRAME_DATA);
@@ -368,6 +374,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolve)
   frame.instruction = 0x216f;
   resolver.FillSourceLineInfo(&frame, nullptr);
   ASSERT_EQ(frame.function_name, "Public2_1");
+  EXPECT_EQ(frame.is_multiple, false);
 
   ClearSourceLineInfo(&frame);
   frame.instruction = 0x219f;
@@ -431,6 +438,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolveOldInlines) {
   ASSERT_EQ(frame.source_file_name, "linux_inline.cpp");
   ASSERT_EQ(frame.source_line, 42);
   ASSERT_EQ(frame.source_line_base, 0x161b6U);
+  EXPECT_EQ(frame.is_multiple, false);
 
   ASSERT_EQ(inlined_frames.size(), 3UL);
 
@@ -475,6 +483,7 @@ TEST_F(TestBasicSourceLineResolver, TestLoadAndResolveNewInlines) {
   ASSERT_EQ(frame.source_file_name, "a.cpp");
   ASSERT_EQ(frame.source_line, 42);
   ASSERT_EQ(frame.source_line_base, 0x161b6U);
+  EXPECT_EQ(frame.is_multiple, false);
 
   ASSERT_EQ(inlined_frames.size(), 3UL);
 

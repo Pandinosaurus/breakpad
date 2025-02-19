@@ -1,5 +1,4 @@
-// Copyright (c) 2010 Google Inc.
-// All rights reserved.
+// Copyright 2010 Google LLC
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
@@ -11,7 +10,7 @@
 // copyright notice, this list of conditions and the following disclaimer
 // in the documentation and/or other materials provided with the
 // distribution.
-//     * Neither the name of Google Inc. nor the names of its
+//     * Neither the name of Google LLC nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
 //
@@ -71,6 +70,7 @@ class SourceLineResolverBase::AutoFileCloser {
 };
 
 struct SourceLineResolverBase::InlineOrigin {
+  InlineOrigin() {}
   InlineOrigin(bool has_file_id, int32_t source_file_id, const string& name)
       : has_file_id(has_file_id),
         source_file_id(source_file_id),
@@ -84,6 +84,7 @@ struct SourceLineResolverBase::InlineOrigin {
 struct SourceLineResolverBase::Inline {
   // A vector of (address, size) pair for a INLINE record.
   using InlineRanges = std::vector<std::pair<MemAddr, MemAddr>>;
+  Inline() {}
   Inline(bool has_call_site_file_id,
          int32_t inline_nest_level,
          int32_t call_site_line,
@@ -103,7 +104,6 @@ struct SourceLineResolverBase::Inline {
   int32_t call_site_file_id;
   int32_t origin_id;
   InlineRanges inline_ranges;
-  RangeMap<MemAddr, linked_ptr<Inline>> child_inlines;
 };
 
 struct SourceLineResolverBase::Line {

@@ -1,5 +1,4 @@
-// Copyright (c) 2007, Google Inc.
-// All rights reserved.
+// Copyright 2007 Google LLC
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
@@ -11,7 +10,7 @@
 // copyright notice, this list of conditions and the following disclaimer
 // in the documentation and/or other materials provided with the
 // distribution.
-//     * Neither the name of Google Inc. nor the names of its
+//     * Neither the name of Google LLC nor the names of its
 // contributors may be used to endorse or promote products derived from
 // this software without specific prior written permission.
 //
@@ -29,11 +28,20 @@
 
 // Author: Alfred Peng
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>  // Must come first
+#endif
+
+#include "client/solaris/handler/solaris_lwp.h"
+
+#include <assert.h>
 #include <dirent.h>
 #include <elf.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <sys/frame.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -41,12 +49,8 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <cassert>
-#include <cstdio>
-#include <cstdlib>
 #include <functional>
 
-#include "client/solaris/handler/solaris_lwp.h"
 #include "common/solaris/message_output.h"
 
 using namespace google_breakpad;
@@ -317,7 +321,7 @@ int SolarisLwp::ListModules(
     return -1;
 
   /*
-   * Determine number of mappings, this value must be 
+   * Determine number of mappings, this value must be
    * larger than the actual module count
    */
   size = status.st_size;
@@ -334,7 +338,7 @@ int SolarisLwp::ListModules(
   prmap_t* _maps;
   int _num;
   int module_count = 0;
-  
+
   /*
    * Scan each mapping - note it is assummed that the mappings are
    * presented in order.  We fill holes between mappings.  On intel
